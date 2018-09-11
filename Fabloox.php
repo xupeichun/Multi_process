@@ -76,10 +76,15 @@ class Fabloox
 
     public static $onMasterStop = null;
 
+
+    public  $redis = null;
+
     //主进程任务
     public static $onMasterTask = null;
     //子进程任务
     public static $onWorkerTask = null;
+    //子进程初始化处理
+    public static $onWorkerInit = null;
 
     protected static $_masterPid = 0;
 
@@ -118,7 +123,7 @@ class Fabloox
 
     protected static $_outputDecorated = null;
 
-    
+
     public static function runAll()
     {
         static::checkSapiEnv();
@@ -669,9 +674,25 @@ class Fabloox
 
             static::setProcessTitle(self::$_daemonName. ': worker process  ' . $worker->name);
             $worker->setUserAndGroup();
-
             $worker->id = $id;
-            $worker->run();
+
+            if (static::$onWorkerInit)
+            {
+                try
+                {
+                    call_user_func(static::$onWorkerInit, $worker);
+                }
+                catch (Exception $e)
+                {
+                    static::log($e);
+                }
+                catch (\Error $e)
+                {
+                    static::log($e);
+                }
+            }
+
+            $worker->run($worker);
             exit(250);
         }
         else
@@ -1156,7 +1177,7 @@ class Fabloox
      *
      * @return void
      */
-    public function run()
+    public function run($worker)
     {
         static::$_status = static::STATUS_RUNNING;
 //        register_shutdown_function(array("\\Fabloox\\Fabloox", 'checkErrors'));
@@ -1168,7 +1189,7 @@ class Fabloox
             {
                 try
                 {
-                    call_user_func(static::$onWorkerTask);
+                    call_user_func(static::$onWorkerTask, $worker);
                 }
                 catch (\Exception $e)
                 {
@@ -1182,7 +1203,7 @@ class Fabloox
                 }
             }
 
-            sleep(1);
+            usleep(1000);
         }
 
         restore_error_handler();
@@ -1191,28 +1212,37 @@ class Fabloox
 }
 
 $fabloox = new Fabloox();
-$fabloox->count = 4;
+$fabloox->count = 3;
 $fabloox->name = 'fabloox';
 
-
-$fabloox::$onWorkerTask = function ()
+$fabloox::$onWorkerInit = function (Fabloox $worker)
 {
-        $redis = new Redis();
-        $redis->connect('127.0.0.1', 6379);
-        $redis->select(10);
-        while ($id = $redis->lPop('mylist'))
-        {
-            file_put_contents('/tmp/log/'. posix_getpid(), $id . "\r\n",FILE_APPEND);
-        }
+    try
+    {
+        $worker->redis = new Redis();
+        $worker->redis->connect('127.0.0.1', 6379);
+        $worker->redis->select(10);
+    }
+    catch (Exception $e)
+    {
+        static::log($e);
+        exit(250);
+    }
+    catch (\Error $e)
+    {
+        static::log($e);
+        exit(250);
+    }
 };
 
-//$redis = new Redis();
-//$redis->connect('127.0.0.1', 6379);
-//$redis->select(10);
-//for ($i = 0; $i<1000000; $i++)
-//{
-//    $redis->rPush('mylist', $i+1);
-//}
+$fabloox::$onWorkerTask = function (Fabloox $worker)
+{
 
+    while ($id = $worker->redis->lPop('mylist'))
+    {
+        file_put_contents('/tmp/log/'. posix_getpid(), $id . "\r\n",FILE_APPEND);
+    }
+
+};
 
 Fabloox::runAll();
